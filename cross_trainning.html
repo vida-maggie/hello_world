@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>魔方 Cross 训练工具</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<style>
+body{font-family:Arial,sans-serif;background:#f5f7fa;margin:0;padding:20px;color:#222}
+.container{max-width:1200px;margin:auto}
+.today-bar{
+  padding:16px 22px;margin-bottom:18px;border-radius:14px;
+  background:linear-gradient(125deg,#1d4ed8 0%,#2563eb 45%,#38bdf8 100%);
+  color:#fff;box-shadow:0 10px 28px rgba(37,99,235,.28);
+}
+.today-bar-inner{display:flex;flex-direction:column;gap:4px}
+.today-bar .today-label{font-size:.8rem;opacity:.85;letter-spacing:.2em}
+.today-bar .today-main{font-size:1.45rem;font-weight:650;letter-spacing:.06em;text-shadow:0 1px 2px rgba(0,0,0,.12)}
+.today-bar .today-sub{font-size:.95rem;opacity:.88}
+.card{background:#fff;border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 4px 12px rgba(0,0,0,.08)}
+.controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+input{width:80px;padding:8px}
+button{background:#2563eb;color:white;border:none;padding:10px 16px;border-radius:8px;cursor:pointer}
+button:hover{background:#1d4ed8}
+.scramble-card{margin-top:20px;padding:16px;border:1px solid #ddd;border-radius:10px}
+.cube-net-wrap{margin-top:12px;display:inline-block}
+.cube-net-grid{
+  display:grid;
+  grid-template-columns:repeat(4,auto);
+  grid-template-rows:repeat(3,auto);
+  gap:12px;
+  align-items:start;
+  justify-items:center;
+}
+.net-cell-u{grid-column:2;grid-row:1}
+.net-cell-l{grid-column:1;grid-row:2}
+.net-cell-f{grid-column:2;grid-row:2}
+.net-cell-r{grid-column:3;grid-row:2}
+.net-cell-b{grid-column:4;grid-row:2}
+.net-cell-d{grid-column:2;grid-row:3}
+.net-face{display:grid;grid-template-columns:repeat(3,var(--st));grid-template-rows:repeat(3,var(--st));gap:var(--inner-gap);padding:2px;border:1px solid #bbb;border-radius:4px;background:#e5e7eb}
+.sticker{width:var(--st);height:var(--st);border:1px solid #888;box-sizing:border-box;border-radius:2px}
+.hidden{display:none}
+.solution{margin-top:10px;background:#f1f5f9;padding:10px;border-radius:8px}
+:root{--st:20px;--inner-gap:2px}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="today-bar" role="status" aria-live="polite">
+    <div class="today-bar-inner">
+      <div class="today-label">今日日期</div>
+      <div class="today-main" id="todayMain">—</div>
+      <div class="today-sub" id="todaySub"></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>魔方 Cross 训练小工具</h2>
+    <div class="controls">
+      <label>最小步数: <input type="number" id="minSteps" value="3" min="1" max="8"></label>
+      <label>最大步数: <input type="number" id="maxSteps" value="7" min="1" max="8"></label>
+      <button onclick="generateTraining()">生成今日训练</button>
+    </div>
+  </div>
+
+  <div id="trainingArea"></div>
+
+  <div class="card">
+    <button onclick="exportWord()">导出今日训练 Word</button>
+  </div>
+</div>
+
+<script>
+const moves = ["U","U'","U2","D","D'","D2","R","R'","R2","L","L'","L2","F","F'","F2","B","B'","B2"];
+const colors={
+  U:'#ffffff',
+  D:'#ffd700',
+  F:'#00aa00',
+  B:'#0000ff',
+  L:'#ff8800',
+  R:'#ff0000'
+};
+let currentTraining=[];
+
+const EDGE_NAMES=['UF','UR','UB','UL','DF','DR','DB','DL','FR','FL','BR','BL'];
+const EDGE_LOCS=[
+  ['U',7,'F',1],['U',5,'R',1],['U',1,'B',1],['U',3,'L',1],
+  ['D',1,'F',7],['D',5,'R',7],['D',7,'B',7],['D',3,'L',7],
+  ['F',5,'R',3],['F',3,'L',5],['B',3,'R',5],['B',5,'L',3]
+];
+
+const SCRAMBLE_ORIENTATION = "打乱方向：白色朝上（U），绿色朝前（F）";
+const CROSS_ORIENTATION = "解 Cross 时：白色中心朝下，绿色中心朝前";
+
+const SCRAMBLE_FACE_TO_INSPECTION = { U:'D', D:'U', R:'L', L:'R', F:'F', B:'B' };
+
+function pieceByColors(a,b){
+  const s=[a,b].sort().join('');
+  const map={FU:'UF',RU:'UR',BU:'UB',LU:'UL',DF:'DF',DR:'DR',BD:'DB',DL:'DL',FR:'FR',FL:'FL',BR:'BR',BL:'BL'};
+  return map[s];
+}
+
+function extractEdgeKey(cube){
+  let s='';
+  for(let slot=0;slot<12;slot++){
+    const [f1,i1,f2,i2]=EDGE_LOCS[slot];
+    const e0=EDGE_NAMES[slot][0];
+    const c1=cube[f1][i1], c2=cube[f2][i2];
+    const piece=pieceByColors(c1,c2);
+    const ori=(c1===e0)?0:1;
+    s+=piece+ori;
+  }
+  return s;
+}
+
+function solvedStickers(){
+  return {
+    U:Array(9).fill('U'),
+    D:Array(9).fill('D'),
+    F:Array(9).fill('F'),
+    B:Array(9).fill('B'),
+    L:Array(9).fill('L'),
+    R:Array(9).fill('R')
+  };
+}
+
+function cloneCube(c){
+  return {
+    U:[...c.U],D:[...c.D],F:[...c.F],B:[...c.B],L:[...c.L],R:[...c.R]
+  };
+}
+
+function rotateFace(face){
+  return [face[6],face[3],face[0],face[7],face[4],face[1],face[8],face[5],face[2]];
+}
+
+function rotateFace180(face){
+  return rotateFace(rotateFace(face));
+}
+
+function getRow(face,r){ return face.slice(r*3,r*3+3); }
+function setRow(face,r,val){ for(let i=0;i<3;i++) face[r*3+i]=val[i]; }
+function getCol(face,c){ return [face[c],face[c+3],face[c+6]]; }
+function setCol(face,c,val){ for(let i=0;i<3;i++) face[c+i*3]=val[i]; }
+
+function applyStickerQuarter(cube, base){
+  cube[base]=rotateFace(cube[base]);
+  let temp;
+  switch(base){
+    case 'U':
+      temp=getRow(cube.F,0);
+      setRow(cube.F,0,getRow(cube.R,0));
+      setRow(cube.R,0,getRow(cube.B,0));
+      setRow(cube.B,0,getRow(cube.L,0));
+      setRow(cube.L,0,temp);
+      break;
+    case 'D':
+      temp=getRow(cube.F,2);
+      setRow(cube.F,2,getRow(cube.L,2));
+      setRow(cube.L,2,getRow(cube.B,2));
+      setRow(cube.B,2,getRow(cube.R,2));
+      setRow(cube.R,2,temp);
+      break;
+    case 'F':
+      temp=getRow(cube.U,2);
+      setRow(cube.U,2,getCol(cube.L,2).reverse());
+      setCol(cube.L,2,getRow(cube.D,0));
+      setRow(cube.D,0,getCol(cube.R,0).reverse());
+      setCol(cube.R,0,temp);
+      break;
+    case 'B':
+      temp=getRow(cube.U,0);
+      setRow(cube.U,0,getCol(cube.R,2));
+      setCol(cube.R,2,getRow(cube.D,2).reverse());
+      setRow(cube.D,2,getCol(cube.L,0));
+      setCol(cube.L,0,temp.reverse());
+      break;
+    case 'R':
+      temp=getCol(cube.U,2);
+      setCol(cube.U,2,getCol(cube.F,2));
+      setCol(cube.F,2,getCol(cube.D,2));
+      setCol(cube.D,2,getCol(cube.B,0).reverse());
+      setCol(cube.B,0,temp.reverse());
+      break;
+    case 'L':
+      temp=getCol(cube.U,0);
+      setCol(cube.U,0,getCol(cube.B,2).reverse());
+      setCol(cube.B,2,getCol(cube.D,0).reverse());
+      setCol(cube.D,0,getCol(cube.F,0));
+      setCol(cube.F,0,temp);
+      break;
+  }
+}
+
+function applyStickerMove(cube, move){
+  const base=move[0];
+  const times=move.includes('2')?2:move.includes("'")?3:1;
+  for(let t=0;t<times;t++) applyStickerQuarter(cube, base);
+}
+
+function applyStickerScramble(scramble){
+  const cube=solvedStickers();
+  const parts=scramble.trim().split(/\s+/).filter(Boolean);
+  parts.forEach(m=>applyStickerMove(cube,m));
+  return cube;
+}
+
+function applyStickerAlgorithm(cube, alg){
+  if(!alg||!String(alg).trim()) return;
+  String(alg).trim().split(/\s+/).filter(Boolean).forEach(m=>applyStickerMove(cube,m));
+}
+
+function wholeCubeZ2AroundFB(cube){
+  const u=rotateFace180(cube.U);
+  const d=rotateFace180(cube.D);
+  const l=rotateFace180(cube.L);
+  const r=rotateFace180(cube.R);
+  const f=rotateFace180(cube.F);
+  const b=rotateFace180(cube.B);
+  cube.U=d;
+  cube.D=u;
+  cube.L=r;
+  cube.R=l;
+  cube.F=f;
+  cube.B=b;
+}
+
+function scrambleFrameToInspectionHoldAlgorithm(alg){
+  if(!alg||!String(alg).trim()) return '';
+  return String(alg).trim().split(/\s+/).filter(Boolean).map(m=>{
+    const f=m[0];
+    const rest=m.slice(1);
+    return (SCRAMBLE_FACE_TO_INSPECTION[f]||f)+rest;
+  }).join(' ');
+}
+
+function verifyInspectionCrossSolution(scramble, inspectionAlg){
+  const cube=applyStickerScramble(scramble);
+  wholeCubeZ2AroundFB(cube);
+  applyStickerAlgorithm(cube, inspectionAlg);
+  return isWhiteCrossSolvedOnBottom(cube);
+}
+
+function isWhiteCrossSolvedOnStickers(cube){
+  const upCrossIdx=[1,3,5,7];
+  for(const idx of upCrossIdx){
+    if(cube.U[idx]!=='U') return false;
+  }
+  if(cube.F[1]!==cube.F[4]) return false;
+  if(cube.R[1]!==cube.R[4]) return false;
+  if(cube.B[1]!==cube.B[4]) return false;
+  if(cube.L[1]!==cube.L[4]) return false;
+  return true;
+}
+
+function isWhiteCrossSolvedOnBottom(cube){
+  const dnCrossIdx=[1,3,5,7];
+  for(const idx of dnCrossIdx){
+    if(cube.D[idx]!=='U') return false;
+  }
+  if(cube.F[7]!==cube.F[4]) return false;
+  if(cube.R[7]!==cube.R[4]) return false;
+  if(cube.B[7]!==cube.B[4]) return false;
+  if(cube.L[7]!==cube.L[4]) return false;
+  return true;
+}
+
+function verifyCrossSolution(scramble, solution){
+  const cube=applyStickerScramble(scramble);
+  applyStickerAlgorithm(cube, solution);
+  return isWhiteCrossSolvedOnStickers(cube);
+}
+
+function solveCross(scramble, maxDepth=8){
+  const start=applyStickerScramble(scramble);
+  if(isWhiteCrossSolvedOnStickers(start)) return {steps:0,solution:''};
+
+  const edgeMemo=new Set();
+
+  function dfs(cube, depth, lastFace, path){
+    if(isWhiteCrossSolvedOnStickers(cube)) return path;
+    if(depth===0) return null;
+
+    const ek=extractEdgeKey(cube);
+    const memK=ek+'|'+depth+'|'+lastFace;
+    if(edgeMemo.has(memK)) return null;
+    edgeMemo.add(memK);
+
+    for(const mv of moves){
+      if(mv[0]===lastFace) continue;
+      const next=cloneCube(cube);
+      applyStickerMove(next, mv);
+      const res=dfs(next, depth-1, mv[0], path.concat(mv));
+      if(res) return res;
+    }
+    return null;
+  }
+
+  for(let d=1;d<=maxDepth;d++){
+    edgeMemo.clear();
+    const path=dfs(cloneCube(start), d, '', []);
+    if(path) return {steps:path.length, solution:path.join(' ')};
+  }
+  return null;
+}
+
+function randomScramble(len=20){
+  let result=[];
+  let last='';
+  while(result.length<len){
+    let m=moves[Math.floor(Math.random()*moves.length)];
+    if(m[0]!==last){
+      result.push(m);
+      last=m[0];
+    }
+  }
+  return result.join(' ');
+}
+
+function makeFaceGrid(stickers, cellClass){
+  const face=document.createElement('div');
+  face.className='net-face '+cellClass;
+  for(let i=0;i<9;i++){
+    const d=document.createElement('div');
+    d.className='sticker';
+    d.style.background=colors[stickers[i]];
+    face.appendChild(d);
+  }
+  return face;
+}
+
+function generateCubeNet(scramble){
+  const state=applyStickerScramble(scramble);
+  const wrap=document.createElement('div');
+  wrap.className='cube-net-wrap';
+
+  const grid=document.createElement('div');
+  grid.className='cube-net-grid';
+
+  grid.appendChild(makeFaceGrid(state.U,'net-cell-u'));
+  grid.appendChild(makeFaceGrid(state.L,'net-cell-l'));
+  grid.appendChild(makeFaceGrid(state.F,'net-cell-f'));
+  grid.appendChild(makeFaceGrid(state.R,'net-cell-r'));
+  grid.appendChild(makeFaceGrid(state.B,'net-cell-b'));
+  grid.appendChild(makeFaceGrid(state.D,'net-cell-d'));
+
+  wrap.appendChild(grid);
+  return wrap;
+}
+
+async function generateTraining(){
+  const min=parseInt(document.getElementById('minSteps').value,10);
+  const max=parseInt(document.getElementById('maxSteps').value,10);
+  const area=document.getElementById('trainingArea');
+
+  area.innerHTML='<div class="card">正在计算 Cross 最优解（与打乱严格同模型），请稍候...</div>';
+  currentTraining=[];
+
+  let attempts=0;
+  while(currentTraining.length<5 && attempts<400){
+    attempts++;
+    const scramble=randomScramble();
+    const cross=solveCross(scramble,8);
+    if(!cross||cross.steps<min||cross.steps>max) continue;
+    const inspectionSolution=scrambleFrameToInspectionHoldAlgorithm(cross.solution);
+    if(
+      verifyCrossSolution(scramble, cross.solution) &&
+      verifyInspectionCrossSolution(scramble, inspectionSolution)
+    ){
+      currentTraining.push({scramble,cross,inspectionSolution});
+    }
+  }
+
+  area.innerHTML='';
+
+  currentTraining.forEach((item,index)=>{
+    const card=document.createElement('div');
+    card.className='card scramble-card';
+
+    card.innerHTML=`
+      <h3>第 ${index+1} 题</h3>
+      <p><strong>打乱公式：</strong>${item.scramble}</p>
+      <p><strong>${SCRAMBLE_ORIENTATION}</strong></p>
+      <div id="net-${index}"></div>
+      <button onclick="toggleSolution(${index})">显示 Cross 解法</button>
+      <div id="solution-${index}" class="solution hidden">
+        <p><strong>Cross 最优步数：</strong>${item.cross.steps} 步</p>
+        <p><strong>观察方向：</strong>${CROSS_ORIENTATION}</p>
+        <p><strong>最优公式（白下绿前持握）：</strong>${item.inspectionSolution}</p>
+      </div>
+    `;
+
+    area.appendChild(card);
+    document.getElementById(`net-${index}`).appendChild(generateCubeNet(item.scramble));
+  });
+}
+
+function toggleSolution(i){
+  document.getElementById(`solution-${i}`).classList.toggle('hidden');
+}
+
+function escapeHtml(s){
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+function exportWord(){
+  if(!currentTraining.length){
+    alert('请先生成训练');
+    return;
+  }
+
+  try{
+    const today=new Date();
+    const y=today.getFullYear();
+    const m=today.getMonth()+1;
+    const d=today.getDate();
+    const dateZh=`${y}年${m}月${d}日`;
+    const dateFile=`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+
+    let body='';
+    currentTraining.forEach((item,i)=>{
+      body+=`<h2>第 ${i+1} 题</h2>`;
+      body+=`<p><strong>打乱公式：</strong>${escapeHtml(item.scramble)}</p>`;
+      body+=`<p><strong>Cross 步数：</strong>${item.cross.steps}</p>`;
+      body+=`<p><strong>参考答案（白下绿前）：</strong>${escapeHtml(item.inspectionSolution)}</p>`;
+      body+='<br/>';
+    });
+
+    const html=`<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Cross 训练 ${escapeHtml(dateZh)}</title>
+<style>
+body{font-family:'PingFang SC','Microsoft YaHei','Segoe UI',Arial,sans-serif;font-size:14pt;line-height:1.65;color:#111}
+h1{font-size:22pt;margin:0 0 12pt}
+h2{font-size:15pt;margin:18pt 0 8pt}
+p{margin:6pt 0}
+hr{border:none;border-top:1px solid #ccc;margin:14pt 0}
+</style>
+</head>
+<body>
+<h1>职业 Cross 训练作业</h1>
+<p>${escapeHtml(dateZh)}</p>
+<hr/>
+${body}
+</body>
+</html>`;
+
+    const blob=new Blob(['\ufeff',html],{type:'application/msword'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`${dateFile}_cross训练.doc`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }catch(err){
+    console.error(err);
+    alert('导出失败，请重试');
+  }
+}
+
+function initTodayBar(){
+  const main=document.getElementById('todayMain');
+  const sub=document.getElementById('todaySub');
+  if(!main) return;
+  const now=new Date();
+  const w=['日','一','二','三','四','五','六'];
+  main.textContent=`${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日`;
+  if(sub) sub.textContent=`星期${w[now.getDay()]}`;
+}
+
+initTodayBar();
+</script>
+</body>
+</html>
